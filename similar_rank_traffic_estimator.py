@@ -10,8 +10,14 @@ from urllib.parse import urlparse
 load_dotenv()
 
 def clean_url(url: str) -> str:
-    """Remove protocol and trailing slashes from URL."""
-    return url.replace("https://", "").replace("http://", "").rstrip('/')
+    """Extract and clean domain from URL."""
+    # Parse the URL
+    parsed = urlparse(url)
+    # Get the netloc (domain) part
+    domain = parsed.netloc if parsed.netloc else parsed.path
+    # Remove 'www.' if present
+    domain = domain.replace('www.', '')
+    return domain
 
 def get_traffic_estimate(rank: int) -> Tuple[str, str]:
     """Return tuple of (low_estimate, high_estimate) based on rank."""
@@ -48,6 +54,7 @@ def get_traffic_estimate(rank: int) -> Tuple[str, str]:
 
 def process_url(url: str, api_key: str) -> Dict:
     """Process a single URL and return its traffic data."""
+    print(f"\n===> Analyzing: {url}")
     clean_domain = clean_url(url)
     result = {
         "url": url,
@@ -57,6 +64,7 @@ def process_url(url: str, api_key: str) -> Dict:
     }
 
     try:
+        print("Fetching SimilarWeb rank data...")
         response = requests.get(
             f"https://api.similarweb.com/v1/similar-rank/{clean_domain}/rank",
             headers={"Content-Type": "application/json", "Accept": "application/json"},
@@ -74,31 +82,38 @@ def process_url(url: str, api_key: str) -> Dict:
                     "low_range_traffic_estimate": low_estimate,
                     "high_range_traffic_estimate": high_estimate
                 })
+                print(f"Rank: {rank}")
+                print(f"Estimated Traffic Range: {low_estimate} - {high_estimate} visits per month")
         elif response.status_code == 429:
+            print("Error: Rate limit exceeded")
             result.update({
                 "similar_rank": "RATE_LIMITED",
                 "low_range_traffic_estimate": "RATE_LIMITED",
                 "high_range_traffic_estimate": "RATE_LIMITED"
             })
         elif response.status_code == 404:
+            print("Error: Domain not found")
             result.update({
                 "similar_rank": "NOT_FOUND",
                 "low_range_traffic_estimate": "NOT_FOUND",
                 "high_range_traffic_estimate": "NOT_FOUND"
             })
         else:
+            print(f"Error: API returned status code {response.status_code}")
             result.update({
                 "similar_rank": f"ERROR_{response.status_code}",
                 "low_range_traffic_estimate": f"ERROR_{response.status_code}",
                 "high_range_traffic_estimate": f"ERROR_{response.status_code}"
             })
     except requests.exceptions.Timeout:
+        print("Error: Request timed out")
         result.update({
             "similar_rank": "TIMEOUT",
             "low_range_traffic_estimate": "TIMEOUT",
             "high_range_traffic_estimate": "TIMEOUT"
         })
     except Exception as e:
+        print(f"Error: {str(e)[:30]}")
         result.update({
             "similar_rank": f"ERROR_{str(e)[:30]}",
             "low_range_traffic_estimate": "ERROR",
@@ -132,19 +147,60 @@ def main():
         with open(input_file, 'r') as f:
             urls = [line.strip() for line in f if line.strip()]
 
-    # Process URLs and write results
+    total_urls = len(urls)
+    print(f"\nProcessing {total_urls} URLs...")
+    
     output_file = 'traffic_estimates.csv'
     fieldnames = ['url', 'similar_rank', 'low_range_traffic_estimate', 'high_range_traffic_estimate']
     
+    # Track statistics
+    stats = {
+        'success': 0,
+        'not_found': 0,
+        'rate_limited': 0,
+        'errors': 0,
+        'timeouts': 0
+    }
+
+    # Create file and write header
     with open(output_file, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
+
+    # Process URLs and write results immediately
+    for index, url in enumerate(urls, 1):
+        print(f"\nURL {index}/{total_urls}")
+        print("=" * 50)
+        result = process_url(url, api_key)
         
-        for url in urls:
-            print(f"Processing: {url}")
-            result = process_url(url, api_key)
+        # Update statistics
+        if result['similar_rank'] == 'NOT_FOUND':
+            stats['not_found'] += 1
+        elif result['similar_rank'] == 'RATE_LIMITED':
+            stats['rate_limited'] += 1
+        elif result['similar_rank'] == 'TIMEOUT':
+            stats['timeouts'] += 1
+        elif 'ERROR' in str(result['similar_rank']):
+            stats['errors'] += 1
+        else:
+            stats['success'] += 1
+
+        # Append result to CSV
+        with open(output_file, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writerow(result)
-            
+        print("=" * 50)
+    
+    # Print summary
+    print("\nAnalysis Summary:")
+    print("=" * 50)
+    print(f"Total URLs processed: {total_urls}")
+    print(f"Successful lookups: {stats['success']}")
+    print(f"Domains not found: {stats['not_found']}")
+    print(f"Rate limit hits: {stats['rate_limited']}")
+    print(f"Timeouts: {stats['timeouts']}")
+    print(f"Other errors: {stats['errors']}")
+    print("=" * 50)
     print(f"\nResults written to {output_file}")
 
 if __name__ == "__main__":
